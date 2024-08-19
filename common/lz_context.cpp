@@ -1,5 +1,9 @@
 
 #include "lz_context.h"
+#include <chrono>
+#include <iostream>
+#include <cstring>
+#include <thread>
 
 lzContext::lzContext()
 {
@@ -387,6 +391,80 @@ void lzContext::runKernel(char *spvFile, char *funcName, void *remoteBuf, void *
     double bandWidth = elemCount * sizeof(uint32_t) / (gpuKernelTime / 1e6) / 1e9;
     printf("#### gpuKernelTime = %f, elemCount = %d, Bandwidth = %f GB/s\n", gpuKernelTime, elemCount, bandWidth);
 }
+
+void lzContext::runKernel(char *spvFile, char *funcName, void *remoteBuf, void *devBuf, void *devBuf2, size_t elemCount)
+{
+    ze_result_t result;
+    kernelSpvFile = spvFile;
+    kernelFuncName = funcName;
+
+    static bool inited = false;
+    if (!inited)
+    {
+        initKernel();
+        inited = true;
+    }
+    const auto start = std::chrono::high_resolution_clock::now();
+
+    // set kernel arguments
+    result = zeKernelSetArgumentValue(function, 0, sizeof(devBuf), &devBuf);
+    CHECK_ZE_STATUS(result, "zeKernelSetArgumentValue");
+
+    result = zeKernelSetArgumentValue(function, 1, sizeof(remoteBuf), &remoteBuf);
+    CHECK_ZE_STATUS(result, "zeKernelSetArgumentValue");
+
+    result = zeKernelSetArgumentValue(function, 2, sizeof(devBuf2), &devBuf2);
+    CHECK_ZE_STATUS(result, "zeKernelSetArgumentValue");
+
+    ze_group_count_t groupCount = {elemCount, 1, 1};
+    result = zeCommandListAppendLaunchKernel(command_list, function, &groupCount, kernelTsEvent, 0, nullptr);
+    CHECK_ZE_STATUS(result, "zeCommandListAppendLaunchKernel");
+
+    result = zeCommandListAppendBarrier(command_list, nullptr, 0, nullptr);
+    CHECK_ZE_STATUS(result, "zeCommandListAppendBarrier");
+
+    result = zeCommandListAppendQueryKernelTimestamps(command_list, 1u, &kernelTsEvent, timestampBuffer, nullptr, nullptr, 0u, nullptr);
+    CHECK_ZE_STATUS(result, "zeCommandListAppendQueryKernelTimestamps");
+
+    result = zeCommandListClose(command_list);
+    CHECK_ZE_STATUS(result, "zeCommandListClose");
+
+    result = zeCommandQueueExecuteCommandLists(command_queue, 1, &command_list, nullptr);
+    CHECK_ZE_STATUS(result, "zeCommandQueueExecuteCommandLists");
+
+    const auto start_1 = std::chrono::high_resolution_clock::now();
+    result = zeCommandQueueSynchronize(command_queue, UINT64_MAX);
+    CHECK_ZE_STATUS(result, "zeCommandQueueSynchronize");
+    const auto end_1 = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> elapsed_1 = end_1 - start_1;
+    std::cout << "-------------------zeCommandQueueSynchronize host time: " << elapsed_1.count() << " ms" << std::endl;
+
+    result = zeCommandListReset(command_list);
+    CHECK_ZE_STATUS(result, "zeCommandListReset");
+
+    const auto end = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> elapsed = end - start;
+
+    ze_kernel_timestamp_result_t *kernelTsResults = reinterpret_cast<ze_kernel_timestamp_result_t *>(timestampBuffer);
+    uint64_t timerResolution = deviceProperties.timerResolution;
+    uint64_t kernelDuration = kernelTsResults->context.kernelEnd - kernelTsResults->context.kernelStart;
+
+    std::cout << "Kernel timestamp statistics (prior to V1.2): \n"
+              << std::fixed
+              << "\tGlobal start : " << std::dec << kernelTsResults->global.kernelStart << " cycles\n"
+              << "\tKernel start: " << std::dec << kernelTsResults->context.kernelStart << " cycles\n"
+              << "\tKernel end: " << std::dec << kernelTsResults->context.kernelEnd << " cycles\n"
+              << "\tGlobal end: " << std::dec << kernelTsResults->global.kernelEnd << " cycles\n"
+              << "\ttimerResolution: " << std::dec << timerResolution << " ns\n"
+              << "\tKernel duration : " << std::dec << kernelDuration << " cycles\n"
+              << "\tKernel Time: " << kernelDuration * timerResolution / 1000.0 << " us\n";
+
+    double gpuKernelTime = kernelDuration * timerResolution / 1000.0;
+    double bandWidth = elemCount * sizeof(uint32_t) / (gpuKernelTime / 1e6) / 1e9;
+    printf("#### gpuKernelTime = %f us, elemCount = %d, Bandwidth = %f GB/s\n", gpuKernelTime, elemCount, bandWidth);
+    std::cout << "runKernel host time: " << elapsed.count() - gpuKernelTime/1000.0 << " ms" << std::endl;
+}
+
 
 void *lzContext::createFromHandle(uint64_t handle, size_t bufSize)
 {

@@ -68,6 +68,7 @@ public:
     void readBuffer(std::vector<uint32_t> &hostDst, void *devSrc, size_t size);
     void writeBuffer(std::vector<uint32_t> hostSrc, void *devDst, size_t size);
     void runKernel(char *spvFile, char *funcName, void *remoteBuf, void *devBuf, size_t elemCount);
+    void runKernel(char *spvFile, char *funcName, void *remoteBuf, void *devBuf, void *devBuf2, size_t elemCount);
     void *createFromHandle(uint64_t handle, size_t bufSize);
     void printBuffer(void* ptr, size_t count = 16);
 };

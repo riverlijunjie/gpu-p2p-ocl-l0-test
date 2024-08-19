@@ -23,10 +23,15 @@ public:
     void readUSM(void *ptr, std::vector<uint32_t> &outBuf, size_t size);
     void freeUSM(void *ptr);
     void runKernel(char *programFile, char *kernelName, void *ptr0, void *ptr1, size_t elemCount);
+    void runKernel(const char *kernelCode, const char *kernelName, cl_mem buf1, cl_mem buf2, cl_mem buf3, size_t elemCount);
 
     cl_mem createBuffer(size_t size, const std::vector<uint32_t> &inbuf = std::vector<uint32_t>{});
     uint64_t deriveHandle(cl_mem clbuf);
     void readBuffer(cl_mem clbuf, std::vector<uint32_t> &outBuf, size_t size);
     void freeBuffer(cl_mem clbuf);
     void printBuffer(cl_mem clbuf, size_t count = 16);
+
+    bool built_kernel = false;
+    cl_program program;
+    cl_kernel kernel;
 };

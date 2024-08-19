@@ -1,5 +1,9 @@
 
 #include "ocl_context.h"
+#include <chrono>
+#include <iostream>
+#include <cstring>
+#include <thread>
 
 oclContext::oclContext(/* args */)
 {
@@ -146,6 +150,65 @@ void oclContext::runKernel(char *kernelCode, char *kernelName, void *ptr0, void 
 
     clReleaseKernel(kernel);
     clReleaseProgram(program);
+}
+
+void oclContext::runKernel(const char *kernelCode, const char *kernelName, cl_mem buf1, cl_mem buf2, cl_mem buf3, size_t elemCount)
+{
+    cl_int err;
+
+    if (!built_kernel)
+    {
+        // built_kernel = true;
+        program = clCreateProgramWithSource(context_, 1, &kernelCode, nullptr, &err);
+        CHECK_OCL_ERROR_EXIT(err, "clCreateProgramWithSource failed");
+
+        std::string buildopt = "-cl-std=CL2.0";
+        err = clBuildProgram(program, 0, NULL, buildopt.c_str(), NULL, NULL);
+        if (err < 0)
+        {
+            size_t logsize = 0;
+            err = clGetProgramBuildInfo(program, device_, CL_PROGRAM_BUILD_LOG, 0, NULL, &logsize);
+            CHECK_OCL_ERROR_EXIT(err, "clGetProgramBuildInfo failed");
+
+            std::vector<char> logbuf(logsize + 1, 0);
+            err = clGetProgramBuildInfo(program, device_, CL_PROGRAM_BUILD_LOG, logsize + 1, logbuf.data(), NULL);
+            CHECK_OCL_ERROR_EXIT(err, "clGetProgramBuildInfo failed");
+            printf("%s\n", logbuf.data());
+
+            exit(1);
+        }
+
+        kernel = clCreateKernel(program, kernelName, &err);
+        CHECK_OCL_ERROR_EXIT(err, "clCreateKernel failed");
+    }
+
+    const auto start_1 = std::chrono::high_resolution_clock::now();
+    err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &buf1);
+    CHECK_OCL_ERROR_EXIT(err, "clSetKernelArg failed");
+
+    err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &buf2);
+    CHECK_OCL_ERROR_EXIT(err, "clSetKernelArg failed");
+
+    err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &buf3);
+    CHECK_OCL_ERROR_EXIT(err, "clSetKernelArg failed");
+
+    size_t global_size[] = {elemCount};
+    err = clEnqueueNDRangeKernel(queue_, kernel, 1, nullptr, global_size, nullptr, 0, nullptr, nullptr);
+    CHECK_OCL_ERROR_EXIT(err, "clEnqueueNDRangeKernel failed");
+    clFinish(queue_);
+
+    const auto end_1 = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> elapsed_1 = end_1 - start_1;
+
+    if (!built_kernel)
+    {
+        clReleaseKernel(kernel);
+        clReleaseProgram(program);
+        std::cout << "clean opencl...";
+        //clReleaseCommandQueue(queue_);
+        //clReleaseContext(context_);
+    }
+    std::cout << "ocl host time: " << elapsed_1.count() << " ms" << std::endl << std::endl;
 }
 
 cl_mem oclContext::createBuffer(size_t size, const std::vector<uint32_t> &inbuf)
