@@ -1,5 +1,8 @@
 
 #include "ocl_context.h"
+#include <chrono>
+#include <string>
+#include <iostream>
 
 oclContext::oclContext(/* args */)
 {
@@ -24,10 +27,14 @@ void oclContext::init(int devIdx)
     err = clGetPlatformIDs(num_platforms, platforms.data(), nullptr);
     CHECK_OCL_ERROR_EXIT(err, "clGetPlatformIDs");
 
+    // char extensions[1024];
     for (const auto &platform : platforms)
     {
         cl_uint num_devices = 0;
         clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, nullptr, &num_devices);
+
+        // clGetPlatformInfo(platform, CL_PLATFORM_EXTENSIONS, 1024, extensions, NULL);
+        // printf("Supported platform extensions: %s\n", extensions);
 
         if (num_devices > 0)
         {
@@ -45,6 +52,8 @@ void oclContext::init(int devIdx)
             }
 
             device_ = devices[devIdx];
+            // clGetDeviceInfo(device_, CL_DEVICE_EXTENSIONS, 1024, extensions, NULL);
+            // printf("Device extensions: %s\n", extensions);
 
             context_ = clCreateContext(NULL, 1, &device_, NULL, NULL, &err);
             CHECK_OCL_ERROR_EXIT(err, "clCreateContext");
@@ -103,6 +112,14 @@ void oclContext::freeUSM(void *ptr)
     CHECK_OCL_ERROR(err, "clMemBlockingFreeINTEL");
 }
 
+void oclContext::getUsedMem()
+{
+    size_t used_mem_size;
+    clGetDeviceInfo(device_, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(size_t),
+                    &used_mem_size, NULL);
+    printf("gpu mem used: %ld MB\n", used_mem_size / 1024 / 1024);
+}
+
 void oclContext::runKernel(char *kernelCode, char *kernelName, void *ptr0, void *ptr1, size_t elemCount)
 {
     cl_int err;
@@ -148,35 +165,51 @@ void oclContext::runKernel(char *kernelCode, char *kernelName, void *ptr0, void 
     clReleaseProgram(program);
 }
 
+void oclContext::copy_data(cl_mem buf0, cl_mem buf1, size_t size)
+{
+    const auto start_1 = std::chrono::high_resolution_clock::now();
+    clEnqueueCopyBuffer(queue_, buf0, buf1, 0, 0, size, 0, NULL, NULL);
+    clFinish(queue_);
+    const auto end_1 = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> elapsed_1 = end_1 - start_1;
+    std::cout << "copy host time: " << elapsed_1.count() << " ms, size = " << size / 1024 << "KB, bandwidth = " << size * 1000 / 1024 / 1024 / 1024 / elapsed_1.count() << " GB / s " << std::endl
+              << std::endl;
+}
+
 void oclContext::runKernel(char *kernelCode, char *kernelName, cl_mem buf0, cl_mem buf1, size_t elemCount)
 {
     cl_int err;
 
+    const auto start_1 = std::chrono::high_resolution_clock::now();
     cl_uint knlcount = 1;
     const char *knlstrList[] = {kernelCode};
     size_t knlsizeList[] = {strlen(kernelCode)};
 
-    cl_program program = clCreateProgramWithSource(context_, knlcount, knlstrList, knlsizeList, &err);
-    CHECK_OCL_ERROR_EXIT(err, "clCreateProgramWithSource failed");
-
-    std::string buildopt = "-cl-std=CL2.0 -cl-intel-greater-than-4GB-buffer-required";
-    err = clBuildProgram(program, 0, NULL, buildopt.c_str(), NULL, NULL);
-    if (err < 0)
+    if (inited_ == false)
     {
-        size_t logsize = 0;
-        err = clGetProgramBuildInfo(program, device_, CL_PROGRAM_BUILD_LOG, 0, NULL, &logsize);
-        CHECK_OCL_ERROR_EXIT(err, "clGetProgramBuildInfo failed");
+        inited_ = true;
+        program = clCreateProgramWithSource(context_, knlcount, knlstrList, knlsizeList, &err);
+        CHECK_OCL_ERROR_EXIT(err, "clCreateProgramWithSource failed");
 
-        std::vector<char> logbuf(logsize + 1, 0);
-        err = clGetProgramBuildInfo(program, device_, CL_PROGRAM_BUILD_LOG, logsize + 1, logbuf.data(), NULL);
-        CHECK_OCL_ERROR_EXIT(err, "clGetProgramBuildInfo failed");
-        printf("%s\n", logbuf.data());
+        std::string buildopt = "-cl-std=CL2.0 -cl-intel-greater-than-4GB-buffer-required";
+        err = clBuildProgram(program, 0, NULL, buildopt.c_str(), NULL, NULL);
+        if (err < 0)
+        {
+            size_t logsize = 0;
+            err = clGetProgramBuildInfo(program, device_, CL_PROGRAM_BUILD_LOG, 0, NULL, &logsize);
+            CHECK_OCL_ERROR_EXIT(err, "clGetProgramBuildInfo failed");
 
-        exit(1);
+            std::vector<char> logbuf(logsize + 1, 0);
+            err = clGetProgramBuildInfo(program, device_, CL_PROGRAM_BUILD_LOG, logsize + 1, logbuf.data(), NULL);
+            CHECK_OCL_ERROR_EXIT(err, "clGetProgramBuildInfo failed");
+            printf("%s\n", logbuf.data());
+
+            exit(1);
+        }
+
+        kernel = clCreateKernel(program, kernelName, &err);
+        CHECK_OCL_ERROR_EXIT(err, "clCreateKernel failed");
     }
-
-    cl_kernel kernel = clCreateKernel(program, kernelName, &err);
-    CHECK_OCL_ERROR_EXIT(err, "clCreateKernel failed");
 
     err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &buf0);
     CHECK_OCL_ERROR_EXIT(err, "clSetKernelArg failed");
@@ -189,8 +222,16 @@ void oclContext::runKernel(char *kernelCode, char *kernelName, cl_mem buf0, cl_m
     CHECK_OCL_ERROR_EXIT(err, "clEnqueueNDRangeKernel failed");
     clFinish(queue_);
 
-    clReleaseKernel(kernel);
-    clReleaseProgram(program);
+    const auto end_1 = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> elapsed_1 = end_1 - start_1;
+    std::cout << "ocl host time: " << elapsed_1.count() << " ms, size = " << elemCount * 4 / 1024 << "KB, bandwidth = " << elemCount * 4.0 * 1000 / 1024 / 1024 / 1024 / elapsed_1.count() << " GB / s " << std::endl
+              << std::endl;
+
+    if (inited_ == false)
+    {
+        clReleaseKernel(kernel);
+        clReleaseProgram(program);
+    }
 }
 
 cl_mem oclContext::createBuffer(size_t size, const std::vector<uint32_t> &inbuf)
@@ -216,7 +257,20 @@ uint64_t oclContext::deriveHandle(cl_mem clbuf)
     cl_int err;
     uint64_t nativeHandle;
     err = clGetMemObjectInfo(clbuf, CL_MEM_ALLOCATION_HANDLE_INTEL, sizeof(nativeHandle), &nativeHandle, NULL);
+
     CHECK_OCL_ERROR(err, "clGetMemObjectInfo - CL_MEM_ALLOCATION_HANDLE_INTEL failed");
+    printf("deriveHandle: cl_mem = %p, fd = %ld\n", clbuf, nativeHandle);
+
+    return nativeHandle;
+}
+
+uint64_t oclContext::deriveHandle(void *usm_buf)
+{
+    cl_int err;
+    uint64_t nativeHandle;
+    err = clGetMemAllocInfoINTEL(context_, usm_buf, CL_MEM_ALLOCATION_HANDLE_INTEL, sizeof(nativeHandle), &nativeHandle, NULL);
+
+    CHECK_OCL_ERROR(err, "clGetMemAllocInfoINTEL - CL_MEM_ALLOCATION_HANDLE_INTEL failed");
 
     return nativeHandle;
 }
@@ -225,17 +279,32 @@ cl_mem oclContext::createFromHandle(uint64_t handle, size_t size)
 {
     cl_int err;
 
-	// Create extMemBuffer of type cl_mem from fd. 
-	cl_mem_properties extMemProperties[] = {
-        (cl_mem_properties)CL_EXTERNAL_MEMORY_HANDLE_DMA_BUF_KHR, 
-		(cl_mem_properties)handle,
-		0 
-    }; 
+    // Create extMemBuffer of type cl_mem from fd.
+    cl_mem_properties extMemProperties[] = {
+        (cl_mem_properties)CL_EXTERNAL_MEMORY_HANDLE_DMA_BUF_KHR,
+        (cl_mem_properties)handle,
+        0};
 
     cl_mem extMemBuffer = clCreateBufferWithProperties(context_, extMemProperties, 0, size, NULL, &err);
     CHECK_OCL_ERROR(err, "clCreateBufferWithProperties failed");
 
+    size_t data_size = 0;
+    err = clGetMemObjectInfo(extMemBuffer, CL_MEM_SIZE, sizeof(size_t), &data_size, NULL);
+    CHECK_OCL_ERROR(err, "clGetMemObjectInfo - CL_MEM_SIZE failed");
+    printf("size = %ld, data_size = %ld\n", size, data_size);
+
+    cl_mem_object_type type;
+    err = clGetMemObjectInfo(extMemBuffer, CL_MEM_TYPE, sizeof(type), &type, NULL);
+    CHECK_OCL_ERROR(err, "clGetMemObjectInfo - CL_MEM_TYPE failed");
+    printf("size = %ld, remote_type = %d\n", size, type);
+
     return extMemBuffer;
+}
+
+void oclContext::releaseMemFromHandle(cl_mem extMemBuffer)
+{
+    // clEnqueueReleaseExternalMemObjectsKHR(queue_,1,&extMemBuffer,0,NULL,NULL);
+    clReleaseMemObject(extMemBuffer);
 }
 
 void oclContext::readBuffer(cl_mem clbuf, std::vector<uint32_t> &outBuf, size_t size, size_t offset)
@@ -254,13 +323,39 @@ void oclContext::freeBuffer(cl_mem clbuf)
 void oclContext::printBuffer(cl_mem clbuf, size_t count, size_t offset)
 {
     std::vector<uint32_t> outBuf(count, 0);
-    readBuffer(clbuf, outBuf, count*sizeof(uint32_t), offset);
+    readBuffer(clbuf, outBuf, count * sizeof(uint32_t), offset);
 
     printf("The first %d elements in cl_mem = %p are: \n", count, clbuf);
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count; i++)
+    {
         printf("%d, ", outBuf[i]);
         if (i && i % 16 == 0)
             printf("\n");
     }
     printf("\n");
+}
+
+void oclContext::compareBuffer(cl_mem clbuf, size_t count, size_t offset, std::vector<uint32_t> &src)
+{
+    std::vector<uint32_t> outBuf(count, 0);
+    readBuffer(clbuf, outBuf, count * sizeof(uint32_t), offset);
+
+    int total = 0;
+    for (int i = 0; i < count; i++)
+    {
+        if (outBuf[i] != 5 * src[i])
+            total++;
+    }
+
+    std::cout << std::endl;
+    if (total == 0)
+    {
+        std::cout << "Compare data result: Pass (100\%)" << std::endl
+                  << std::endl;
+    }
+    else
+    {
+        std::cout << "Compare data result: Failed (" << 100.0 * total / count << "\%)" << std::endl
+                  << std::endl;
+    }
 }

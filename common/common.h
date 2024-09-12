@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 
+#pragma OPENCL EXTENSION cl_khr_external_memory : enable
 #include <CL/cl.h>
 #include <CL/cl_ext.h>
 
